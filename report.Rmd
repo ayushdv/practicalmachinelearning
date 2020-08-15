@@ -1,0 +1,177 @@
+---
+title: "Practical Machine Learning Project"
+author: "Ayushmaan"
+date: "11/08/2020"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Project Overview
+
+## Introduction
+
+This project is the final course project for the Practical Machine Learning Coursera Course by Johns Hopkins University. In this report, we will build a machine learning algorithm to predict the manner in which some participants did an exercise. Further, we will use it to predict on 20 different test cases.
+
+## Background and Data
+
+Using devices such as Jawbone Up, Nike FuelBand, and Fitbit it is now possible to collect a large amount of data about personal activity relatively inexpensively. These type of devices are part of the quantified self movement – a group of enthusiasts who take measurements about themselves regularly to improve their health, to find patterns in their behavior, or because they are tech geeks. One thing that people regularly do is quantify how much of a particular activity they do, but they rarely quantify how well they do it. In this project, your goal will be to use data from accelerometers on the belt, forearm, arm, and dumbell of 6 participants. They were asked to perform barbell lifts correctly and incorrectly in 5 different ways. The data was sourced from the website here: http://web.archive.org/web/20161224072740/http:/groupware.les.inf.puc-rio.br/har
+
+# Loading Required Libraries and adding Reproducibilty
+
+```{r}
+library(dplyr)
+library(rpart)
+library(rpart.plot)
+library(rattle)
+library(caret)
+library(randomForest)
+library(corrplot)
+library(gbm)
+library(RColorBrewer)
+
+set.seed(1234)
+```
+
+# Initialising Data
+
+## Loading Data
+
+```{r}
+training <- read.csv(url("https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv"),header=TRUE)
+dim(training)
+
+testing <- read.csv(url("https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv"), header = TRUE)
+dim(testing)
+
+str(training)
+str(testing)
+```
+
+From seeing the structure of the training and testing dataset, it is quite clear that there are several columns which have missing values either present as NA or empty values (""). We can clean the datasets by removing such columns and also those columns which contain names, timestamps etc. that won;t affect the prediction model.
+
+## Data Cleaning
+
+### Based on NA/Missing Values
+
+```{r}
+i1 <- 1
+emptycol1 <- c(0)
+for(col1 in names(training)){
+        count1 = sum(ifelse(training[,col1] == ""|is.na(training[, col1]), 1, 0))
+       emptycol1[i1] <- ifelse(count1 == 0, 1, 0)
+       i1 <- i1 + 1
+}
+
+i2 <- 1
+emptycol2 <- c(0)
+for(col2 in names(testing)){
+  count2  = sum(ifelse(testing[, col2]==""|is.na(testing[, col2]), 1, 0))
+  emptycol2[i2] <- ifelse(count2==0, 1, 0)
+  i2 <- i2 +1
+}
+rm(i1, i2, col1, col2, count1, count2)
+```
+
+The above code chunk sorts out those columns which have NA/missing values (coded as 0), and those that don't have (coded as 1), for both our training and testing datasets. The follwing code chunk sorts out the cleaned datasets we would be using for our modelling and prediction.
+
+```{r}
+training_clean <- training[, as.logical(emptycol1)]
+training_clean <- training_clean[, -c(1:7)]
+dim(training_clean)
+
+testing_clean <- testing[, as.logical(emptycol2)]
+testing_clean <- testing_clean[, -c(1:7)]
+dim(testing_clean)
+
+rm(emptycol1, emptycol2)
+```
+
+### Based on Zero/Near-Zero-Variance features
+
+```{r}
+any(nearZeroVar(training_clean, saveMetrics = T)[, c("zeroVar", "nzv")]==TRUE)
+```
+
+As we can see, there are no zero/near zero variance features in our training set.
+
+## Partitioning Data for Model Buiding
+
+```{r}
+set.seed(1234)
+
+inTrain <- createDataPartition(training_clean$classe, p = 0.6, list = F)
+train_data <- training_clean[inTrain, ]
+validation_data <- training_clean[-inTrain, ]
+
+dim(train_data)
+dim(validation_data)
+```
+
+The testing set remains untouched as the final model will be applied on it, so that the model selection remains unbiased and not overfitted.
+
+# Constructing and Improving Model
+
+## Exploratory Data Analysis
+
+```{r fig.width= 10, fig.height= 10}
+corrplot(cor(train_data[, -53]), order = "FPC", method = "color", type = "upper", tl.cex = 0.7, tl.col = rgb(1, 0, 1),mar = c(0, 0, 1, 0), title = "Training Dataset Correlation Plot")
+```
+
+```{r}
+corrmatrix <- abs(cor(train_data[,-53]))
+diag(corrmatrix) <- 0
+corrmatrix <- which(corrmatrix > 0.9, arr.ind = T)
+corrmatrix <- dim(corrmatrix)[1]
+corrmatrix
+```
+
+The darker red and darker blue regions represent features with high correlation (negative and positive respectively). Our calculation confirms that there are approximately 22 pairs of highly correlated features. For the purpose of our study, we will choose not to remove these variables so as to not induce bias in our model.
+
+## Building the Model
+
+For our project, we will use the Random Forest model with cross-validation to build our prediction model.
+
+### Cross-Validation
+
+In order to limit the effects of overfitting, and improve the efficicency of the models, we will use the cross-validation technique. Cross-validation is done for each model with number of folds = 10. This is set in the below code chunk using the fitControl object as defined below, and then the random forest model is trained with cross-validation.
+
+```{r}
+fitControl <- trainControl(method = "cv", number = 10, classProbs = T )
+model <- train(classe ~., data = train_data, method = "rf", trControl = fitControl, verbose = F)
+```
+
+```{r fig.height=8, fig.width=8}
+plot(model, main = "Accuracy VS Number of Predictors for Random Forest Model")
+plot(varImp(model), main = "Importance of various variables in model")
+```
+
+The plot of the model shows that the accuracy is highest with restricting the number of predictors to 2. Also, the plot of variable importance shows that almost all variables are important for the model. So, we don't need to prune our model features further to improve generalisability. Now, we will apply our model to the validation set.
+
+### Prediction
+
+```{r}
+model_predict <- predict(model,newdata=validation_data)
+caret::confusionMatrix(as.factor(validation_data$classe), model_predict)
+```
+
+```{r}
+print(model)
+print(model$finalModel)
+```
+
+The above code chunk provides a summary of the model. Using cross-validation with 10 folds, the accuracy of our model on the validation set comes out to be **99.34%**. This predicts our generalised out of sample error to be around **0.66%**, which is managable. The model itself predicts an out of bag error of **0.8%**.
+
+# Applying Model on Testing set
+
+We will use the random forest model we have created and apply it on the test dataset for the final course quiz.
+
+```{r include=FALSE}
+test_prediction <- predict(model, testing_clean)
+test_prediction
+```
+
